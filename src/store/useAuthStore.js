@@ -2,6 +2,7 @@ import {create} from "zustand"
 import { axiosIntance } from "../lib/axios"
 import toast from "react-hot-toast";
 import { io } from "socket.io-client";
+import { useChatStore } from "./useChatStore";
 
 
 const BASE_URL = 'http://localhost:3000'
@@ -94,6 +95,7 @@ export const useAuthStore = create((set,get)=>({
       get().disconnectSocket();
 
      await axiosIntance.post('/auth/logout');
+     useChatStore.getState().resetChat();
 
      set({authUser: null, authProvider: null});
      toast.success("Logged out successfully");

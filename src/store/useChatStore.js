@@ -7,8 +7,10 @@ import { useAuthStore } from "./useAuthStore";
 export const useChatStore = create((set,get)=>({
     messages:[],
     users:[],
+    groups: [],
     selectedUser:null,
     isUsersLoading: false,
+    isGroupsLoading: false,
     isMessagesLoading: false,
     isClearingChat: false,
     isTyping: false,  
@@ -29,31 +31,134 @@ export const useChatStore = create((set,get)=>({
         }
     },
 
-    getMessages: async(userId)=>{
-        if (!userId) return;
-        set({isMessagesLoading:true});
-        try{
-           const res = await axiosIntance.get(`/message/${userId}`)
-           set({messages:res.data})
-        }catch(error){
-            toast.error(error.response.data.message);
-        }finally{
-            set({isMessagesLoading:false})
+    getGroups: async() => {
+      set({isGroupsLoading: true});
+      try{
+        const res = await axiosIntance.get("message/groups");
+        set({groups: res.data});
+
+        const socket = useAuthStore.getState().socket;
+        if (socket) {
+          res.data.forEach(group => {
+            socket.emit("joinGroup", group._id);
+          });
         }
+        return res.data;
+      }catch(error){
+          toast.error(error.response?.data?.message || "Failed to fetch groups");
+      }finally{
+          set({isGroupsLoading: false})
+      }
+  },
+
+  createGroup: async(groupData) => {
+    try {
+        const res = await axiosIntance.post("/message/createGroup", groupData);
+        
+        // Add the new group to the groups array
+        set(state => ({
+            groups: [...state.groups, res.data]
+        }));
+        
+        return res.data;
+    } catch (error) {
+        throw error;
+    }
+},
+
+leaveGroup: async(groupId) => {
+    try {
+        const res = await axiosIntance.post("/message/leaveGroup", { groupId });
+        
+        // Remove the group from the groups array
+        set(state => ({
+            groups: state.groups.filter(group => group._id !== groupId)
+        }));
+        
+        // If the selected user is the group being left, clear it
+        const { selectedUser } = get();
+        if (selectedUser && selectedUser._id === groupId) {
+            set({ selectedUser: null, messages: [] });
+        }
+        
+        // Notify socket
+        const socket = useAuthStore.getState().socket;
+        if (socket) {
+            socket.emit("leaveGroup", { 
+                groupId: groupId,
+                userId: useAuthStore.getState().authUser._id 
+            });
+        }
+        
+        return res.data;
+    } catch (error) {
+        throw error;
+    }
+  },
+
+resetChat: () => {
+    const { unsubscribeFromMessages } = get();
+    unsubscribeFromMessages();
+
+    set({
+      selectedUser: null,
+      messages: [],
+      isMessagesLoading: false,
+      isTyping: false,
+    });
+  },
+
+  clearSelectedUser: () => {
+    const { unsubscribeFromMessages } = get();
+    unsubscribeFromMessages();
+    
+    set({
+      selectedUser: null,
+      messages: [],
+      isMessagesLoading: false,
+      isTyping: false,
+    });
+  }, 
+
+    getMessages: async(userId) => {
+      if (!userId) return;
+      
+      const { selectedUser } = get();
+      const isGroup = selectedUser?.isGroup;
+      
+      set({isMessagesLoading: true});
+      
+      try{
+          const endpoint = isGroup 
+              ? `/message/getGroupMessages/${userId}`
+              : `/message/${userId}`;
+              
+          const res = await axiosIntance.get(endpoint);
+          set({messages: res.data});
+      } catch(error) {
+          toast.error(error.response?.data?.message || "Failed to fetch messages");
+      } finally {
+          set({isMessagesLoading: false});
+      }
     },
 
-    sendMessage: async ({ text, image }) => {
+   sendMessage: async ({ text, image }) => {
         const { selectedUser } = get();
         
         if (!selectedUser) {
-          throw new Error('No user selected');
+          throw new Error('No user or group selected');
         }
         
         set({ loading: true });
         
         try {
+          const isGroup = selectedUser.isGroup;
+          const endpoint = isGroup 
+              ? `/message/sendGroupMessages/${selectedUser._id}`
+              : `/message/send/${selectedUser._id}`;
+              
           const response = await axiosIntance.post(
-            `/message/send/${selectedUser._id}`,
+            endpoint,
             { text, image },
             {
               headers: {
@@ -72,29 +177,48 @@ export const useChatStore = create((set,get)=>({
           return response.data;
         } catch (error) {
           set({ loading: false, error: error.response?.data || error.message });
-          
-          // Important: Re-throw the error so the component can handle it
           throw error;
         }
-      },
-
-    subscribeToMessages:()=>{
-        const{selectedUser} = get();
-        if(!selectedUser) return;
-
-        const socket = useAuthStore.getState().socket;
-        if (!socket) return;
-
-
-        socket.on('newMessage', (newMessage)=>{
-            if(newMessage.senderId !== selectedUser._id) return;
-          set({
-            messages: [...get().messages, newMessage],
-            isTyping: false 
-          })
-        })
-        get().subscribeToTyping();
     },
+
+
+    subscribeToMessages: () => {
+      const { selectedUser } = get();
+      if (!selectedUser) return;
+
+      const socket = useAuthStore.getState().socket;
+      if (!socket) return;
+
+      if (selectedUser.isGroup) {
+        socket.emit("joinGroup", selectedUser._id);
+      }
+
+      // Handle both direct and group messages
+      socket.on('newMessage', (newMessage) => {
+          const isGroup = selectedUser.isGroup;
+          
+          if (isGroup) {
+              // For group messages, check if it's for the current group
+              if (newMessage.groupId === selectedUser._id) {
+                  set({
+                      messages: [...get().messages, newMessage],
+                      isTyping: false 
+                  });
+              }
+          } else {
+              // For direct messages, check if it's from the selected user
+              if (newMessage.senderId === selectedUser._id) {
+                  set({
+                      messages: [...get().messages, newMessage],
+                      isTyping: false 
+                  });
+              }
+          }
+      });
+      
+      get().subscribeToTyping();
+  },
+
 
     unsubscribeFromMessages: ()=>{
          const socket =useAuthStore.getState().socket; 
@@ -105,32 +229,58 @@ export const useChatStore = create((set,get)=>({
     },
 
     sendTypingStatus: () => {
-        const { selectedUser, typingTimeout } = get();
-        if (!selectedUser) return;
-        
-        const socket = useAuthStore.getState().socket;
-        if (!socket) return;
-        
-        // Clear any existing timeout
-        if (typingTimeout) clearTimeout(typingTimeout);
-        
-        // Emit typing event
-        socket.emit("typing", { recipientId: selectedUser._id });
+      const { selectedUser, typingTimeout } = get();
+      if (!selectedUser) return;
+      
+      const socket = useAuthStore.getState().socket;
+      if (!socket) return;
+      
+      // Clear any existing timeout
+      if (typingTimeout) clearTimeout(typingTimeout);
+      
+      const isGroup = selectedUser.isGroup;
+      
+      // Emit typing event
+      if (isGroup) {
+          socket.emit("groupTyping", { groupId: selectedUser._id });
+      } else {
+          socket.emit("typing", { recipientId: selectedUser._id });
+      }
 
-        const timeout = setTimeout(() => {
-            socket.emit("stopTyping", { recipientId: selectedUser._id });
-        }, 2000);
-        
-        set({ typingTimeout: timeout });
-    },
+      const timeout = setTimeout(() => {
+          if (isGroup) {
+              socket.emit("groupStopTyping", { groupId: selectedUser._id });
+          } else {
+              socket.emit("stopTyping", { recipientId: selectedUser._id });
+          }
+      }, 2000);
+      
+      set({ typingTimeout: timeout });
+  },
 
-    subscribeToTyping: () => {
-        const { selectedUser } = get();
-        if (!selectedUser) return;
+
+  subscribeToTyping: () => {
+    const { selectedUser } = get();
+    if (!selectedUser) return;
+    
+    const socket = useAuthStore.getState().socket;
+    if (!socket) return;
+    
+    const isGroup = selectedUser.isGroup;
+    
+    if (isGroup) {
+        socket.on("userGroupTyping", (data) => {
+            if (data.groupId === selectedUser._id && data.senderId !== useAuthStore.getState().authUser._id) {
+                set({ isTyping: true });
+            }
+        });
         
-        const socket = useAuthStore.getState().socket;
-        if (!socket) return;
-        
+        socket.on("userGroupStopTyping", (data) => {
+            if (data.groupId === selectedUser._id) {
+                set({ isTyping: false });
+            }
+        });
+    } else {
         socket.on("userTyping", (data) => {
             if (data.senderId === selectedUser._id) {
                 set({ isTyping: true });
@@ -142,47 +292,69 @@ export const useChatStore = create((set,get)=>({
                 set({ isTyping: false });
             }
         });
-    },
+    }
+},
 
-    unsubscribeFromTyping: () => {
-        const socket = useAuthStore.getState().socket;
-        if (!socket) return;
-        
-        socket.off("userTyping");
-        socket.off("userStopTyping");
-        
-        const { typingTimeout } = get();
-        if (typingTimeout) clearTimeout(typingTimeout);
-        
-        set({ isTyping: false, typingTimeout: null });
-    }, 
+unsubscribeFromTyping: () => {
+  const socket = useAuthStore.getState().socket;
+  if (!socket) return;
+  
+  socket.off("userTyping");
+  socket.off("userStopTyping");
+  socket.off("userGroupTyping");
+  socket.off("userGroupStopTyping");
+  
+  const { typingTimeout } = get();
+  if (typingTimeout) clearTimeout(typingTimeout);
+  
+  set({ isTyping: false, typingTimeout: null });
+}, 
 
-    clearChat: async (userId) => {
-        set({ isClearingChat: true });
-        try {
-          await axiosIntance.post("/message/clear", { userId });
+clearChat: async (userId) => {
+  const { selectedUser } = get();
+  const isGroup = selectedUser?.isGroup;
+  
+  set({ isClearingChat: true });
+  
+  try {
+      const endpoint = isGroup 
+          ? "/message/clearGroupMessages"
+          : "/message/clear";
           
-          // Clear messages in local state
-          set({ messages: [] });
+      const data = isGroup 
+          ? { groupId: userId }
+          : { userId };
           
-          // Optional: Notify the socket about cleared chat
-          const { socket } = useAuthStore.getState();
-          if (socket) {
-            socket.emit("chatCleared", { 
-              receiverId: userId,
-              senderId: useAuthStore.getState().authUser._id 
-            });
+      await axiosIntance.post(endpoint, data);
+      
+      // Clear messages in local state
+      set({ messages: [] });
+      
+      // Notify socket about cleared chat
+      const { socket } = useAuthStore.getState();
+      if (socket) {
+          if (isGroup) {
+              socket.emit("groupChatCleared", { 
+                  groupId: userId,
+                  senderId: useAuthStore.getState().authUser._id 
+              });
+          } else {
+              socket.emit("chatCleared", { 
+                  receiverId: userId,
+                  senderId: useAuthStore.getState().authUser._id 
+              });
           }
-          
-          return true;
-        } catch (error) {
-          console.error("Error clearing chat:", error);
-          toast.error("Failed to clear chat");
-          return false;
-        } finally {
-          set({ isClearingChat: false });
-        }
-    },
+      }
+      
+      return true;
+  } catch (error) {
+      console.error("Error clearing chat:", error);
+      toast.error("Failed to clear chat");
+      return false;
+  } finally {
+      set({ isClearingChat: false });
+  }
+},
 
     setSelectedUser: (selectedUser)=> set({selectedUser})
 }))

@@ -157,11 +157,11 @@ const SignUpForm = () => {
         </p>
       </div>
 
-      <div className="mt-4 text-center">
+      {/* <div className="mt-4 text-center">
         <span>or</span>
-      </div>
+      </div> */}
 
-      <Button
+      {/* <Button
          type="button"
          className="w-full mt-4 flex items-center justify-center  border "
        >
@@ -185,7 +185,7 @@ const SignUpForm = () => {
            <path fill="none" d="M1 1h22v22H1z" />
          </svg>
          <span className="font-medium">Sign up with Google</span>
-      </Button>
+      </Button> */}
     </form>
   )
 }

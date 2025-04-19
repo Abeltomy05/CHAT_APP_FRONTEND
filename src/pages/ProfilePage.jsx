@@ -211,7 +211,7 @@ export default function ProfileDashboard() {
                         <span>Updating...</span>
                       </div>
                     ) : (
-                      "Update Profile"
+                      "You can update your profile picture here "
                     )}
                   </motion.button>
                 </div>
