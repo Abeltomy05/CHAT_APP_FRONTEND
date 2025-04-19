@@ -17,6 +17,7 @@
     "@mui/material": "^6.4.4",
     "@zegocloud/zego-uikit-prebuilt": "^2.14.1-beta",
     "axios": "^1.7.9",
+    "chat-application": "file:..",
     "framer-motion": "^12.4.3",
     "lucide-react": "^0.475.0",
     "react": "^18.2.0",
